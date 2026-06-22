@@ -41,4 +41,15 @@
 //
 // This may cause a panic if the object you are getting is nil (the type assertion will fail), in those
 // cases you should check for nil first.
+//
+// # Matching Interface Types
+//
+// To match arguments by interface type (e.g. context.Context, io.Reader), use
+// [AssignableToTypeOf] with a nil pointer to the interface:
+//
+//	mock.On("Handle", mock.AssignableToTypeOf((*context.Context)(nil)), "data").Return(nil)
+//	mock.On("Read", mock.AssignableToTypeOf((*io.Reader)(nil))).Return(nil)
+//
+// This works with [Arguments.Diff], [Arguments.Assert], [Mock.AssertCalled],
+// and all other existing mock assertion paths.
 package mock

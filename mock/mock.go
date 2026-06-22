@@ -460,6 +460,10 @@ func callString(method string, arguments Arguments, includeArgumentValues bool) 
 				argVals = append(argVals, fmt.Sprintf("%d: %s", argIndex, arg))
 				continue
 			}
+			if assignableArg, ok := arg.(*AssignableToTypeOfArgument); ok {
+				argVals = append(argVals, fmt.Sprintf("%d: assignable to %s", argIndex, assignableArg.t.String()))
+				continue
+			}
 			argVals = append(argVals, fmt.Sprintf("%d: %#v", argIndex, arg))
 		}
 		argValsString = fmt.Sprintf("\n\t\t%s", strings.Join(argVals, "\n\t\t"))
@@ -834,9 +838,12 @@ type IsTypeArgument struct {
 //
 //	args.Assert(t, IsType(""), IsType(0))
 //
-// Mock cannot match interface types because the contained type will be  passed
+// Mock cannot match interface types because the contained type will be passed
 // to both IsType and Mock.Called, for the zero value of all interfaces this
-// will be <nil> type.
+// will be <nil> type. For interface type matching, use [AssignableToTypeOf]
+// instead:
+//
+//	mock.On("Do", mock.AssignableToTypeOf((*context.Context)(nil)))
 func IsType(t interface{}) *IsTypeArgument {
 	return &IsTypeArgument{t: reflect.TypeOf(t)}
 }
@@ -867,6 +874,43 @@ func FunctionalOptions(values ...interface{}) *FunctionalOptionsArgument {
 	return &FunctionalOptionsArgument{
 		values: values,
 	}
+}
+
+// AssignableToTypeOfArgument is a struct that contains the type of an argument
+// for use when assignability checking. This is an alternative to [IsType]
+// that correctly handles interface types by using Go's assignability rules.
+// Used in [Arguments.Diff] and [Arguments.Assert].
+type AssignableToTypeOfArgument struct {
+	t reflect.Type
+}
+
+// AssignableToTypeOf returns an [AssignableToTypeOfArgument] object containing
+// the target type to check assignability against. The actual argument must be
+// assignable to the target type according to Go's assignability rules.
+//
+// For concrete types, pass a zero value:
+//
+//	mock.On("Do", mock.AssignableToTypeOf(""))
+//
+// For interface types, pass a nil pointer to the interface:
+//
+//	mock.On("Do", mock.AssignableToTypeOf((*context.Context)(nil)))
+//	mock.On("Do", mock.AssignableToTypeOf((*io.Reader)(nil)))
+//
+// For pointer types:
+//
+//	mock.On("Do", mock.AssignableToTypeOf((*MyStruct)(nil)))
+//
+// Used in [Arguments.Diff] and [Arguments.Assert].
+func AssignableToTypeOf(example interface{}) *AssignableToTypeOfArgument {
+	t := reflect.TypeOf(example)
+	if t == nil {
+		panic("mock: AssignableToTypeOf example cannot be nil; for interface types, use AssignableToTypeOf((*context.Context)(nil))")
+	}
+	if t.Kind() == reflect.Ptr && t.Elem().Kind() == reflect.Interface {
+		t = t.Elem()
+	}
+	return &AssignableToTypeOfArgument{t: t}
 }
 
 // argumentMatcher performs custom argument matching, returning whether or
@@ -1018,6 +1062,26 @@ func (args Arguments) Diff(objects []interface{}) (string, int) {
 					differences++
 					output = fmt.Sprintf("%s\t%d: FAIL:  type %s != type %s - %s\n", output, i, safeTypeName(expected.t), safeTypeName(actualT), actualFmt)
 				}
+			case *AssignableToTypeOfArgument:
+				actualT := reflect.TypeOf(actual)
+				expectedT := expected.t
+				actualTypeName := safeTypeName(actualT)
+				expectedTypeName := expectedT.String()
+
+				if actualT == nil {
+					switch expectedT.Kind() {
+					case reflect.Interface, reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+						output = fmt.Sprintf("%s\t%d: PASS:  %s assignable to type %s\n", output, i, actualFmt, expectedTypeName)
+					default:
+						differences++
+						output = fmt.Sprintf("%s\t%d: FAIL:  <nil> not assignable to type %s - %s\n", output, i, expectedTypeName, actualFmt)
+					}
+				} else if !actualT.AssignableTo(expectedT) {
+					differences++
+					output = fmt.Sprintf("%s\t%d: FAIL:  type %s not assignable to type %s - %s\n", output, i, actualTypeName, expectedTypeName, actualFmt)
+				} else {
+					output = fmt.Sprintf("%s\t%d: PASS:  %s assignable to type %s\n", output, i, actualFmt, expectedTypeName)
+				}
 			case *FunctionalOptionsArgument:
 				var name string
 				if len(expected.values) > 0 {
@@ -1091,7 +1155,12 @@ func (args Arguments) String(indexOrNil ...int) string {
 		// normal String() method - return a string representation of the args
 		var argsStr []string
 		for _, arg := range args {
-			argsStr = append(argsStr, fmt.Sprintf("%T", arg)) // handles nil nicely
+			switch v := arg.(type) {
+			case *AssignableToTypeOfArgument:
+				argsStr = append(argsStr, v.t.String())
+			default:
+				argsStr = append(argsStr, fmt.Sprintf("%T", arg)) // handles nil nicely
+			}
 		}
 		return strings.Join(argsStr, ",")
 	} else if len(indexOrNil) == 1 {
