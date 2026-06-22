@@ -131,6 +131,41 @@ func (i *TestExampleImplementation) TheExampleMethodFuncType(fn ExampleFuncType)
 	return args.Error(0)
 }
 
+type ctxSvcMock struct{ Mock }
+
+func (m *ctxSvcMock) Handle(ctx context.Context, name string) error {
+	args := m.Called(ctx, name)
+	return args.Error(0)
+}
+
+type ctxSvcMockSingle struct{ Mock }
+
+func (m *ctxSvcMockSingle) Handle(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+type wrongTypeMock struct{ Mock }
+
+func (m *wrongTypeMock) Handle(x int) error {
+	args := m.Called(x)
+	return args.Error(0)
+}
+
+type readerSvcMock struct{ Mock }
+
+func (m *readerSvcMock) ReadAll(r io.Reader) ([]byte, error) {
+	args := m.Called(r)
+	return args.Get(0).([]byte), args.Error(1)
+}
+
+type procSvcMock struct{ Mock }
+
+func (m *procSvcMock) Process(ctx context.Context, r io.Reader, n int) error {
+	args := m.Called(ctx, r, n)
+	return args.Error(0)
+}
+
 // MockTestingT mocks a test struct
 type MockTestingT struct {
 	logfCount, errorfCount, failNowCount int
@@ -2470,205 +2505,158 @@ func TestIssue1227AssertExpectationsForObjectsWithMock(t *testing.T) {
 	assert.Equal(t, 1, mockT.errorfCount)
 }
 
-/*
-	AssignableToTypeOf tests
-*/
-
-func Test_Arguments_Diff_WithAssignableToTypeOfArgument_InterfaceType(t *testing.T) {
+func Test_Arguments_Diff_AssignableToTypeOf_Success(t *testing.T) {
 	t.Parallel()
 
-	args := Arguments{AssignableToTypeOf((*context.Context)(nil))}
-	_, count := args.Diff([]interface{}{context.Background()})
-	assert.Equal(t, 0, count)
-
-	args2 := Arguments{AssignableToTypeOf((*io.Reader)(nil))}
-	_, count2 := args2.Diff([]interface{}{bytes.NewBufferString("hello")})
-	assert.Equal(t, 0, count2)
-
-	args3 := Arguments{AssignableToTypeOf((*ExampleInterface)(nil))}
-	_, count3 := args3.Diff([]interface{}{new(TestExampleImplementation)})
-	assert.Equal(t, 0, count3)
+	tests := []struct {
+		name    string
+		matcher interface{}
+		actual  interface{}
+	}{
+		{"context interface", AssignableToTypeOf((*context.Context)(nil)), context.Background()},
+		{"io.Reader interface", AssignableToTypeOf((*io.Reader)(nil)), bytes.NewBufferString("hello")},
+		{"custom interface", AssignableToTypeOf((*ExampleInterface)(nil)), new(TestExampleImplementation)},
+		{"concrete string", AssignableToTypeOf(""), "hello"},
+		{"concrete int", AssignableToTypeOf(0), 42},
+		{"concrete bool", AssignableToTypeOf(false), true},
+		{"pointer type", AssignableToTypeOf((*ExampleType)(nil)), &ExampleType{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := Arguments{tt.matcher}
+			diff, count := args.Diff([]interface{}{tt.actual})
+			assert.Equal(t, 0, count, "expected match for %s: %s", tt.name, diff)
+		})
+	}
 }
 
-func Test_Arguments_Diff_WithAssignableToTypeOfArgument_ConcreteType(t *testing.T) {
+func Test_Arguments_Diff_AssignableToTypeOf_Fail(t *testing.T) {
 	t.Parallel()
 
-	args := Arguments{AssignableToTypeOf("")}
-	_, count := args.Diff([]interface{}{"hello"})
-	assert.Equal(t, 0, count)
-
-	args2 := Arguments{AssignableToTypeOf(0)}
-	_, count2 := args2.Diff([]interface{}{42})
-	assert.Equal(t, 0, count2)
-
-	args3 := Arguments{AssignableToTypeOf(false)}
-	_, count3 := args3.Diff([]interface{}{true})
-	assert.Equal(t, 0, count3)
+	tests := []struct {
+		name         string
+		matcher      interface{}
+		actual       interface{}
+		wantContains string
+	}{
+		{"int to string", AssignableToTypeOf(""), 42, "type int not assignable to type string"},
+		{"int to context.Context", AssignableToTypeOf((*context.Context)(nil)), 42, "type int not assignable to type context.Context"},
+		{"string to io.Reader", AssignableToTypeOf((*io.Reader)(nil)), "not a reader", "type string not assignable to type io.Reader"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := Arguments{tt.matcher}
+			diff, count := args.Diff([]interface{}{tt.actual})
+			assert.Equal(t, 1, count)
+			assert.Contains(t, diff, tt.wantContains)
+		})
+	}
 }
 
-func Test_Arguments_Diff_WithAssignableToTypeOfArgument_PointerType(t *testing.T) {
+func Test_Arguments_Diff_AssignableToTypeOf_Nil(t *testing.T) {
 	t.Parallel()
 
-	args := Arguments{AssignableToTypeOf((*ExampleType)(nil))}
-	_, count := args.Diff([]interface{}{&ExampleType{}})
-	assert.Equal(t, 0, count)
-
-	type myStruct struct{ X int }
-	args2 := Arguments{AssignableToTypeOf((*myStruct)(nil))}
-	_, count2 := args2.Diff([]interface{}{&myStruct{X: 1}})
-	assert.Equal(t, 0, count2)
-}
-
-func Test_Arguments_Diff_WithAssignableToTypeOfArgument_Failing(t *testing.T) {
-	t.Parallel()
-
-	args := Arguments{AssignableToTypeOf("")}
-	diff, count := args.Diff([]interface{}{42})
-	assert.Equal(t, 1, count)
-	assert.Contains(t, diff, "type int not assignable to type string")
-
-	args2 := Arguments{AssignableToTypeOf((*context.Context)(nil))}
-	diff2, count2 := args2.Diff([]interface{}{42})
-	assert.Equal(t, 1, count2)
-	assert.Contains(t, diff2, "type int not assignable to type context.Context")
-
-	args3 := Arguments{AssignableToTypeOf((*io.Reader)(nil))}
-	diff3, count3 := args3.Diff([]interface{}{"not a reader"})
-	assert.Equal(t, 1, count3)
-	assert.Contains(t, diff3, "type string not assignable to type io.Reader")
-}
-
-func Test_Arguments_Diff_WithAssignableToTypeOfArgument_NilActual(t *testing.T) {
-	t.Parallel()
-
-	args := Arguments{AssignableToTypeOf((*context.Context)(nil))}
-	_, count := args.Diff([]interface{}{nil})
-	assert.Equal(t, 0, count)
-
-	args2 := Arguments{AssignableToTypeOf((*io.Reader)(nil))}
-	_, count2 := args2.Diff([]interface{}{nil})
-	assert.Equal(t, 0, count2)
-
-	args3 := Arguments{AssignableToTypeOf((*ExampleType)(nil))}
-	_, count3 := args3.Diff([]interface{}{nil})
-	assert.Equal(t, 0, count3)
-
-	args4 := Arguments{AssignableToTypeOf("")}
-	diff4, count4 := args4.Diff([]interface{}{nil})
-	assert.Equal(t, 1, count4)
-	assert.Contains(t, diff4, "<nil> not assignable to type string")
-
-	args5 := Arguments{AssignableToTypeOf(0)}
-	diff5, count5 := args5.Diff([]interface{}{nil})
-	assert.Equal(t, 1, count5)
-	assert.Contains(t, diff5, "<nil> not assignable to type int")
-}
-
-func Test_Arguments_Diff_WithAssignableToTypeOfArgument_TypedNil(t *testing.T) {
-	t.Parallel()
-
-	var ctx context.Context = nil
-	args := Arguments{AssignableToTypeOf((*context.Context)(nil))}
-	_, count := args.Diff([]interface{}{ctx})
-	assert.Equal(t, 0, count)
-
-	var reader io.Reader = nil
-	args2 := Arguments{AssignableToTypeOf((*io.Reader)(nil))}
-	_, count2 := args2.Diff([]interface{}{reader})
-	assert.Equal(t, 0, count2)
-
-	var et *ExampleType = nil
-	args3 := Arguments{AssignableToTypeOf((*ExampleType)(nil))}
-	_, count3 := args3.Diff([]interface{}{et})
-	assert.Equal(t, 0, count3)
-}
-
-func Test_Mock_On_WithAssignableToTypeOfArgument(t *testing.T) {
-	t.Parallel()
-
-	var mockedService TestExampleImplementation
-
-	type ctxService interface {
-		Handle(context.Context, string) error
+	tests := []struct {
+		name      string
+		matcher   interface{}
+		wantCount int
+	}{
+		{"nil to context interface", AssignableToTypeOf((*context.Context)(nil)), 0},
+		{"nil to io.Reader interface", AssignableToTypeOf((*io.Reader)(nil)), 0},
+		{"nil to pointer", AssignableToTypeOf((*ExampleType)(nil)), 0},
+		{"nil to string (should fail)", AssignableToTypeOf(""), 1},
+		{"nil to int (should fail)", AssignableToTypeOf(0), 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := Arguments{tt.matcher}
+			diff, count := args.Diff([]interface{}{nil})
+			assert.Equal(t, tt.wantCount, count, "got diff:\n%s", diff)
+		})
 	}
 
-	type ctxServiceImpl struct{ Mock }
+	diff, _ := Arguments{AssignableToTypeOf("")}.Diff([]interface{}{nil})
+	assert.Contains(t, diff, "<nil> not assignable to type string")
 
-	func (m *ctxServiceImpl) Handle(ctx context.Context, name string) error {
-		args := m.Called(ctx, name)
-		return args.Error(0)
+	diff, _ = Arguments{AssignableToTypeOf(0)}.Diff([]interface{}{nil})
+	assert.Contains(t, diff, "<nil> not assignable to type int")
+}
+
+func Test_Arguments_Diff_AssignableToTypeOf_TypedNil(t *testing.T) {
+	t.Parallel()
+
+	var (
+		ctx    context.Context = nil
+		reader io.Reader        = nil
+		et     *ExampleType     = nil
+	)
+	tests := []struct {
+		name    string
+		matcher interface{}
+		actual  interface{}
+	}{
+		{"typed nil context", AssignableToTypeOf((*context.Context)(nil)), ctx},
+		{"typed nil reader", AssignableToTypeOf((*io.Reader)(nil)), reader},
+		{"typed nil pointer", AssignableToTypeOf((*ExampleType)(nil)), et},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := Arguments{tt.matcher}
+			diff, count := args.Diff([]interface{}{tt.actual})
+			assert.Equal(t, 0, count, "expected match: %s", diff)
+		})
+	}
+}
 
-	var svc ctxServiceImpl
+func Test_Mock_On_AssignableToTypeOf(t *testing.T) {
+	t.Parallel()
+
+	var svc ctxSvcMock
 	svc.On("Handle", AssignableToTypeOf((*context.Context)(nil)), "test").Return(nil)
-
 	err := svc.Handle(context.Background(), "test")
 	assert.NoError(t, err)
 
-	svc2 := ctxServiceImpl{}
+	svc2 := ctxSvcMock{}
 	svc2.On("Handle", AssignableToTypeOf((*context.Context)(nil)), AssignableToTypeOf("")).Return(nil)
-
 	err = svc2.Handle(context.WithValue(context.Background(), "key", "value"), "hello")
 	assert.NoError(t, err)
+	svc2.AssertExpectations(t)
 }
 
-func Test_Mock_On_WithAssignableToTypeOfArgument_Unexpected(t *testing.T) {
+func Test_Mock_Unexpected_AssignableToTypeOf(t *testing.T) {
 	t.Parallel()
 
-	type ctxService interface {
-		Handle(context.Context) error
-	}
-	type ctxServiceImpl struct{ Mock }
-	func (m *ctxServiceImpl) Handle(ctx context.Context) error {
-		args := m.Called(ctx)
-		return args.Error(0)
-	}
-
-	var svc ctxServiceImpl
-	svc.On("Handle", AssignableToTypeOf((*context.Context)(nil))).Return(nil)
+	var w wrongTypeMock
+	w.On("Handle", AssignableToTypeOf((*context.Context)(nil))).Return(nil)
 
 	defer func() {
 		r := recover()
-		require.NotNil(t, r, "expected panic for unexpected call with wrong type")
+		require.NotNil(t, r)
 		msg := fmt.Sprintf("%v", r)
 		assert.Contains(t, msg, "Unexpected Method Call")
 		assert.Contains(t, msg, "type int not assignable to type context.Context")
 	}()
-
-	type wrongType struct{ Mock }
-	func (m *wrongType) Handle(x int) error {
-		args := m.Called(x)
-		return args.Error(0)
-	}
-	var w wrongType
-	w.On("Handle", AssignableToTypeOf((*context.Context)(nil))).Return(nil)
 	w.Handle(42)
 }
 
-func Test_Mock_AssertCalled_WithAssignableToTypeOfArgument(t *testing.T) {
+func Test_Mock_AssertCalled_AssignableToTypeOf(t *testing.T) {
 	t.Parallel()
 
-	type readerService interface {
-		ReadAll(io.Reader) ([]byte, error)
-	}
-	type readerServiceImpl struct{ Mock }
-	func (m *readerServiceImpl) ReadAll(r io.Reader) ([]byte, error) {
-		args := m.Called(r)
-		return args.Get(0).([]byte), args.Error(1)
-	}
-
-	var svc readerServiceImpl
+	var svc readerSvcMock
 	svc.On("ReadAll", AssignableToTypeOf((*io.Reader)(nil))).Return([]byte("data"), nil)
 
 	buf := bytes.NewBufferString("hello")
-	svc.ReadAll(buf)
+	_, err := svc.ReadAll(buf)
+	require.NoError(t, err)
 
-	assert.True(t, svc.AssertCalled(t, "ReadAll", AssignableToTypeOf((*io.Reader)(nil))))
-	assert.True(t, svc.AssertCalled(t, "ReadAll", AssignableToTypeOf((*bytes.Buffer)(nil))))
-	assert.False(t, svc.AssertCalled(t, "ReadAll", AssignableToTypeOf("")))
+	assert.True(t, svc.AssertCalled(t, "ReadAll", AssignableToTypeOf((*io.Reader)(nil))), "should match by io.Reader interface")
+
+	mockT := new(MockTestingT)
+	assert.False(t, svc.AssertCalled(mockT, "ReadAll", AssignableToTypeOf("")), "string should not match io.Reader call")
+	assert.Equal(t, 1, mockT.errorfCount, "mismatch should trigger one errorf call")
 }
 
-func Test_Arguments_Diff_WithAssignableToTypeOfArgument_MultipleArgs(t *testing.T) {
+func Test_Arguments_Diff_AssignableToTypeOf_MultipleArgs(t *testing.T) {
 	t.Parallel()
 
 	args := Arguments{
@@ -2688,10 +2676,10 @@ func Test_AssignableToTypeOf_PanicsOnNilExample(t *testing.T) {
 
 	assert.Panics(t, func() {
 		AssignableToTypeOf(nil)
-	}, "AssignableToTypeOf should panic when given nil")
+	})
 }
 
-func Test_Arguments_String_WithAssignableToTypeOfArgument(t *testing.T) {
+func Test_Arguments_String_AssignableToTypeOf(t *testing.T) {
 	t.Parallel()
 
 	args := Arguments{AssignableToTypeOf((*context.Context)(nil))}
@@ -2704,7 +2692,7 @@ func Test_Arguments_String_WithAssignableToTypeOfArgument(t *testing.T) {
 	assert.Equal(t, "io.Reader,int", args3.String())
 }
 
-func Test_AssignableToTypeOf_ErrorMessages_Clarity(t *testing.T) {
+func Test_AssignableToTypeOf_ErrorMessages_NoNilAmbiguity(t *testing.T) {
 	t.Parallel()
 
 	args := Arguments{AssignableToTypeOf((*io.Writer)(nil))}
@@ -2724,16 +2712,7 @@ func Test_AssignableToTypeOf_ErrorMessages_Clarity(t *testing.T) {
 func Test_Mock_AssignableToTypeOf_Integration(t *testing.T) {
 	t.Parallel()
 
-	type service interface {
-		Process(context.Context, io.Reader, int) error
-	}
-	type serviceImpl struct{ Mock }
-	func (m *serviceImpl) Process(ctx context.Context, r io.Reader, n int) error {
-		args := m.Called(ctx, r, n)
-		return args.Error(0)
-	}
-
-	var svc serviceImpl
+	var svc procSvcMock
 	svc.On("Process",
 		AssignableToTypeOf((*context.Context)(nil)),
 		AssignableToTypeOf((*io.Reader)(nil)),
